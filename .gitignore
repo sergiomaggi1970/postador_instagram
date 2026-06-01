@@ -1,0 +1,4 @@
+node_modules/
+posts.db
+*.db
+.env
