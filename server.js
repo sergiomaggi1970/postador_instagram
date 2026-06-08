@@ -225,8 +225,8 @@ const server = http.createServer(async (req, res) => {
     const status = parsed.query.status || null;
     const limit = parseInt(parsed.query.limit) || 50;
     const posts = status
-      ? db.prepare(`SELECT id,title,caption,image_url,scheduled_at,status,error,published_at,created_at FROM posts WHERE status=? ORDER BY scheduled_at DESC LIMIT ?`).all(status, limit)
-      : db.prepare(`SELECT id,title,caption,image_url,scheduled_at,status,error,published_at,created_at FROM posts ORDER BY scheduled_at DESC LIMIT ?`).all(limit);
+      ? db.prepare(`SELECT id,title,caption,image_url,ig_user_id,scheduled_at,status,error,published_at,created_at FROM posts WHERE status=? ORDER BY scheduled_at DESC LIMIT ?`).all(status, limit)
+      : db.prepare(`SELECT id,title,caption,image_url,ig_user_id,scheduled_at,status,error,published_at,created_at FROM posts ORDER BY scheduled_at DESC LIMIT ?`).all(limit);
     return jsonResponse(res, 200, { posts, total: posts.length });
   }
 
