@@ -33,9 +33,10 @@ db.exec(`
     published_at TEXT,
     created_at  TEXT DEFAULT (datetime('now'))
   );
-  -- Migration: adiciona fb_page_id se não existir
-  try { db.exec('ALTER TABLE posts ADD COLUMN fb_page_id TEXT'); } catch(e) {}
 `);
+
+// Migration: adiciona fb_page_id em bancos antigos
+try { db.exec('ALTER TABLE posts ADD COLUMN fb_page_id TEXT'); } catch(e) {}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function jsonResponse(res, status, data) {
