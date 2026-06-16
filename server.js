@@ -104,16 +104,33 @@ async function publishToInstagram(post) {
   // 4. Publica no Facebook se page_id configurado
   if (post.fb_page_id) {
     try {
-      const fbUrl = `https://graph.facebook.com/v19.0/${post.fb_page_id}/photos` +
+      // Tenta /photos primeiro
+      const fbPhotoUrl = `https://graph.facebook.com/v19.0/${post.fb_page_id}/photos` +
         `?url=${encodeURIComponent(post.image_url)}` +
         `&caption=${encodeURIComponent(post.caption || '')}` +
         `&access_token=${post.ig_token}`;
-      const fbRes = await fetch(fbUrl, { method: 'POST' });
-      const fbData = await fbRes.json();
-      if (fbRes.ok) {
-        console.log(`[publish] FB publicado! post_id=${fbData.post_id || fbData.id}`);
+      const fbPhotoRes = await fetch(fbPhotoUrl, { method: 'POST' });
+      const fbPhotoData = await fbPhotoRes.json();
+      if (fbPhotoRes.ok) {
+        console.log(`[publish] FB /photos publicado! post_id=${fbPhotoData.post_id || fbPhotoData.id}`);
       } else {
-        console.warn(`[publish] FB erro: ${fbData.error?.message}`);
+        // Fallback: /feed com link
+        console.warn(`[publish] FB /photos falhou (${fbPhotoData.error?.message}), tentando /feed`);
+        const fbFeedRes = await fetch(`https://graph.facebook.com/v19.0/${post.fb_page_id}/feed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: post.caption || '',
+            link: post.image_url,
+            access_token: post.ig_token
+          })
+        });
+        const fbFeedData = await fbFeedRes.json();
+        if (fbFeedRes.ok) {
+          console.log(`[publish] FB /feed publicado! id=${fbFeedData.id}`);
+        } else {
+          console.warn(`[publish] FB /feed erro: ${fbFeedData.error?.message}`);
+        }
       }
     } catch(e) {
       console.warn(`[publish] FB erro: ${e.message}`);
