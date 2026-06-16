@@ -26,12 +26,15 @@ db.exec(`
     image_url   TEXT NOT NULL,
     ig_user_id  TEXT NOT NULL,
     ig_token    TEXT NOT NULL,
+    fb_page_id  TEXT,
     scheduled_at TEXT NOT NULL,
     status      TEXT DEFAULT 'pending',
     error       TEXT,
     published_at TEXT,
     created_at  TEXT DEFAULT (datetime('now'))
   );
+  -- Migration: adiciona fb_page_id se não existir
+  try { db.exec('ALTER TABLE posts ADD COLUMN fb_page_id TEXT'); } catch(e) {}
 `);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -65,7 +68,7 @@ function checkAuth(req) {
 async function publishToInstagram(post) {
   console.log(`[publish] iniciando post ${post.id} — ${post.title.substring(0, 40)}`);
 
-  // 1. Cria container de mídia
+  // 1. Cria container de mídia no Instagram
   const containerUrl = `https://graph.facebook.com/v19.0/${post.ig_user_id}/media` +
     `?image_url=${encodeURIComponent(post.image_url)}` +
     `&caption=${encodeURIComponent(post.caption || '')}` +
@@ -83,7 +86,7 @@ async function publishToInstagram(post) {
   // 2. Aguarda processamento
   await new Promise(r => setTimeout(r, 4000));
 
-  // 3. Publica
+  // 3. Publica no Instagram
   const publishUrl = `https://graph.facebook.com/v19.0/${post.ig_user_id}/media_publish` +
     `?creation_id=${containerData.id}` +
     `&access_token=${post.ig_token}`;
@@ -95,7 +98,27 @@ async function publishToInstagram(post) {
     throw new Error(publishData.error?.message || 'Erro ao publicar');
   }
 
-  console.log(`[publish] publicado! post_id=${publishData.id}`);
+  console.log(`[publish] IG publicado! post_id=${publishData.id}`);
+
+  // 4. Publica no Facebook se page_id configurado
+  if (post.fb_page_id) {
+    try {
+      const fbUrl = `https://graph.facebook.com/v19.0/${post.fb_page_id}/photos` +
+        `?url=${encodeURIComponent(post.image_url)}` +
+        `&caption=${encodeURIComponent(post.caption || '')}` +
+        `&access_token=${post.ig_token}`;
+      const fbRes = await fetch(fbUrl, { method: 'POST' });
+      const fbData = await fbRes.json();
+      if (fbRes.ok) {
+        console.log(`[publish] FB publicado! post_id=${fbData.post_id || fbData.id}`);
+      } else {
+        console.warn(`[publish] FB erro: ${fbData.error?.message}`);
+      }
+    } catch(e) {
+      console.warn(`[publish] FB erro: ${e.message}`);
+    }
+  }
+
   return publishData.id;
 }
 
@@ -168,10 +191,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       const id = crypto.randomUUID();
+      const { fb_page_id } = body;
       db.prepare(`
-        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, scheduled_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, scheduled_at);
+        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, fb_page_id, scheduled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, fb_page_id || null, scheduled_at);
 
       console.log(`[schedule] novo post agendado: ${id} para ${scheduled_at}`);
       return jsonResponse(res, 201, { id, scheduled_at, status: 'pending' });
@@ -206,11 +230,12 @@ const server = http.createServer(async (req, res) => {
 
       const scheduledAt = new Date(baseTime.getTime() + interval_minutes * 60 * 1000).toISOString();
       const id = crypto.randomUUID();
+      const { fb_page_id: fb_page_id_q } = body;
 
       db.prepare(`
-        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, scheduled_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, scheduledAt);
+        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, fb_page_id, scheduled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, fb_page_id_q || null, scheduledAt);
 
       console.log(`[queue] post adicionado à fila: ${id} para ${scheduledAt}`);
       return jsonResponse(res, 201, { id, scheduled_at: scheduledAt, status: 'pending' });
