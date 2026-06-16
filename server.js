@@ -27,6 +27,7 @@ db.exec(`
     ig_user_id  TEXT NOT NULL,
     ig_token    TEXT NOT NULL,
     fb_page_id  TEXT,
+    fb_page_token TEXT,
     scheduled_at TEXT NOT NULL,
     status      TEXT DEFAULT 'pending',
     error       TEXT,
@@ -37,6 +38,7 @@ db.exec(`
 
 // Migration: adiciona fb_page_id em bancos antigos
 try { db.exec('ALTER TABLE posts ADD COLUMN fb_page_id TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE posts ADD COLUMN fb_page_token TEXT'); } catch(e) {}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function jsonResponse(res, status, data) {
@@ -105,32 +107,17 @@ async function publishToInstagram(post) {
   if (post.fb_page_id) {
     try {
       // Tenta /photos primeiro
+      const fbToken = post.fb_page_token || post.ig_token;
       const fbPhotoUrl = `https://graph.facebook.com/v19.0/${post.fb_page_id}/photos` +
         `?url=${encodeURIComponent(post.image_url)}` +
         `&caption=${encodeURIComponent(post.caption || '')}` +
-        `&access_token=${post.ig_token}`;
+        `&access_token=${fbToken}`;
       const fbPhotoRes = await fetch(fbPhotoUrl, { method: 'POST' });
       const fbPhotoData = await fbPhotoRes.json();
       if (fbPhotoRes.ok) {
-        console.log(`[publish] FB /photos publicado! post_id=${fbPhotoData.post_id || fbPhotoData.id}`);
+        console.log(`[publish] FB publicado! post_id=${fbPhotoData.post_id || fbPhotoData.id}`);
       } else {
-        // Fallback: /feed com link
-        console.warn(`[publish] FB /photos falhou (${fbPhotoData.error?.message}), tentando /feed`);
-        const fbFeedRes = await fetch(`https://graph.facebook.com/v19.0/${post.fb_page_id}/feed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: post.caption || '',
-            link: post.image_url,
-            access_token: post.ig_token
-          })
-        });
-        const fbFeedData = await fbFeedRes.json();
-        if (fbFeedRes.ok) {
-          console.log(`[publish] FB /feed publicado! id=${fbFeedData.id}`);
-        } else {
-          console.warn(`[publish] FB /feed erro: ${fbFeedData.error?.message}`);
-        }
+        console.warn(`[publish] FB erro: ${fbPhotoData.error?.message}`);
       }
     } catch(e) {
       console.warn(`[publish] FB erro: ${e.message}`);
@@ -209,11 +196,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       const id = crypto.randomUUID();
-      const { fb_page_id } = body;
+      const { fb_page_id, fb_page_token } = body;
       db.prepare(`
-        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, fb_page_id, scheduled_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, fb_page_id || null, scheduled_at);
+        INSERT INTO posts (id, title, caption, image_url, ig_user_id, ig_token, fb_page_id, fb_page_token, scheduled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, title, caption || '', image_url, ig_user_id, ig_token, fb_page_id || null, fb_page_token || null, scheduled_at);
 
       console.log(`[schedule] novo post agendado: ${id} para ${scheduled_at}`);
       return jsonResponse(res, 201, { id, scheduled_at, status: 'pending' });
