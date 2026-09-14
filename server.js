@@ -10,12 +10,16 @@ const fetch = require('node-fetch');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
 const API_SECRET = process.env.API_SECRET || 'trocar-por-chave-secreta';
 
 // ─── Banco de dados SQLite ───────────────────────────────────────────────────
+// No Railway, DB_PATH deve apontar para o Volume (ex: /data/posts.db);
+// sem Volume o banco fica no filesystem efêmero e é apagado a cada deploy.
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'posts.db');
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new Database(DB_PATH);
 
 db.exec(`
