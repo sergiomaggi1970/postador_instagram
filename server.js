@@ -71,6 +71,36 @@ function checkAuth(req) {
   return req.headers['x-api-secret'] === API_SECRET;
 }
 
+// Remove tokens de mensagens de erro antes de gravar no banco/log.
+// Ex: erros de rede do node-fetch incluem a URL completa, com ?access_token=...
+function sanitizeError(message, ...tokens) {
+  let s = String(message ?? '');
+  for (const t of tokens) if (t) s = s.split(t).join('[REDACTED]');
+  return s
+    .replace(/access_token=[^&\s"']+/gi, 'access_token=[REDACTED]')
+    .replace(/\bEAA[A-Za-z0-9]{20,}/g, '[REDACTED]');
+}
+
+// Cria um Error a partir da resposta da Graph API preservando code, subcode e fbtrace_id.
+function graphError(data, fallbackMessage) {
+  const e = (data && data.error) || {};
+  const err = new Error(e.message || fallbackMessage);
+  err.code = e.code;
+  err.subcode = e.error_subcode;
+  err.fbtraceId = e.fbtrace_id;
+  return err;
+}
+
+// Mensagem para a coluna error: "mensagem [code=… subcode=… fbtrace_id=…]", sem tokens.
+function formatError(err, ...tokens) {
+  const details = [
+    err.code != null && `code=${err.code}`,
+    err.subcode != null && `subcode=${err.subcode}`,
+    err.fbtraceId && `fbtrace_id=${err.fbtraceId}`,
+  ].filter(Boolean).join(' ');
+  return sanitizeError(details ? `${err.message} [${details}]` : err.message, ...tokens);
+}
+
 // ─── Publicar no Instagram ───────────────────────────────────────────────────
 async function publishToInstagram(post) {
   console.log(`[publish] iniciando post ${post.id} — ${post.title.substring(0, 40)}`);
@@ -81,11 +111,26 @@ async function publishToInstagram(post) {
     `&caption=${encodeURIComponent(post.caption || '')}` +
     `&access_token=${post.ig_token}`;
 
-  const containerRes = await fetch(containerUrl, { method: 'POST' });
-  const containerData = await containerRes.json();
+  // Retry APENAS na criação do container: um container não publicado expira sozinho
+  // em 24h e é inofensivo. NUNCA repetir o /media_publish — criaria posts duplicados.
+  // A Graph API falha de forma intermitente ao baixar a imagem (9004/2207052).
+  const MAX_CONTAINER_ATTEMPTS = 3;
+  const CONTAINER_RETRY_DELAY_MS = 5000;
+  let containerData;
+  for (let attempt = 1; ; attempt++) {
+    const containerRes = await fetch(containerUrl, { method: 'POST' });
+    containerData = await containerRes.json();
+    if (containerRes.ok && containerData.id) break;
 
-  if (!containerRes.ok || !containerData.id) {
-    throw new Error(containerData.error?.message || 'Erro ao criar container');
+    const err = graphError(containerData, 'Erro ao criar container');
+    const isMediaDownloadFailure = err.code === 9004 && err.subcode === 2207052;
+    if (!isMediaDownloadFailure || attempt >= MAX_CONTAINER_ATTEMPTS) {
+      if (attempt > 1) err.message += ` (falhou após ${attempt} tentativas)`;
+      throw err;
+    }
+    console.warn(`[publish] container falhou (tentativa ${attempt}/${MAX_CONTAINER_ATTEMPTS}): ` +
+      `${sanitizeError(err.message, post.ig_token)} [fbtrace_id=${err.fbtraceId}] — nova tentativa em ${CONTAINER_RETRY_DELAY_MS / 1000}s`);
+    await new Promise(r => setTimeout(r, CONTAINER_RETRY_DELAY_MS));
   }
 
   console.log(`[publish] container criado: ${containerData.id}`);
@@ -102,7 +147,7 @@ async function publishToInstagram(post) {
   const publishData = await publishRes.json();
 
   if (!publishRes.ok) {
-    throw new Error(publishData.error?.message || 'Erro ao publicar');
+    throw graphError(publishData, 'Erro ao publicar');
   }
 
   console.log(`[publish] IG publicado! post_id=${publishData.id}`);
@@ -124,7 +169,7 @@ async function publishToInstagram(post) {
         console.warn(`[publish] FB erro: ${fbPhotoData.error?.message}`);
       }
     } catch(e) {
-      console.warn(`[publish] FB erro: ${e.message}`);
+      console.warn(`[publish] FB erro: ${sanitizeError(e.message, post.fb_page_token, post.ig_token)}`);
     }
   }
 
@@ -147,8 +192,10 @@ cron.schedule('* * * * *', async () => {
   console.log(`[cron] ${pending.length} post(s) para publicar agora`);
 
   for (const post of pending) {
-    // Marca como 'publishing' para evitar dupla execução
-    db.prepare(`UPDATE posts SET status='publishing' WHERE id=?`).run(post.id);
+    // Marca como 'publishing' só se ainda estiver 'pending'. O node-cron não espera a
+    // rodada anterior terminar; se outra rodada já pegou o post, pula (evita publish duplo).
+    const claimed = db.prepare(`UPDATE posts SET status='publishing' WHERE id=? AND status='pending'`).run(post.id);
+    if (claimed.changes === 0) continue;
     try {
       const postId = await publishToInstagram(post);
       db.prepare(`
@@ -157,10 +204,11 @@ cron.schedule('* * * * *', async () => {
       `).run(post.id);
       console.log(`[cron] ✓ ${post.id} publicado (ig_id=${postId})`);
     } catch(err) {
+      const safeMessage = formatError(err, post.ig_token, post.fb_page_token);
       db.prepare(`
         UPDATE posts SET status='failed', error=? WHERE id=?
-      `).run(err.message, post.id);
-      console.error(`[cron] ✗ ${post.id} falhou: ${err.message}`);
+      `).run(safeMessage, post.id);
+      console.error(`[cron] ✗ ${post.id} falhou: ${safeMessage}`);
     }
   }
 });
@@ -269,8 +317,8 @@ const server = http.createServer(async (req, res) => {
   if (deleteMatch && method === 'DELETE') {
     if (!checkAuth(req)) return jsonResponse(res, 401, { error: 'Não autorizado' });
     const id = deleteMatch[1];
-    const result = db.prepare(`DELETE FROM posts WHERE id=? AND status='pending'`).run(id);
-    if (result.changes === 0) return jsonResponse(res, 404, { error: 'Post não encontrado ou já publicado' });
+    const result = db.prepare(`DELETE FROM posts WHERE id=? AND status IN ('pending','failed')`).run(id);
+    if (result.changes === 0) return jsonResponse(res, 404, { error: 'Post não encontrado, publicado ou em publicação' });
     return jsonResponse(res, 200, { ok: true, deleted: id });
   }
 

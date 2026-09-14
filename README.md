@@ -28,7 +28,7 @@ Servidor Node.js que publica posts no Instagram automaticamente no horário agen
 | POST | `/schedule` | Agenda um post para data/hora específica |
 | POST | `/queue` | Adiciona à fila (publica após o último agendado) |
 | GET | `/posts` | Lista posts (aceita `?status=pending`) |
-| DELETE | `/posts/:id` | Cancela um post pendente |
+| DELETE | `/posts/:id` | Cancela um post pendente ou remove um post com erro |
 | PATCH | `/posts/:id` | Atualiza horário de um post pendente |
 
 Todos os endpoints (exceto `/ping`) exigem o header `X-API-Secret`.
